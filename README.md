@@ -1,13 +1,8 @@
 # BMD Auto Fill Usage
 
-## Versions
-
-- `bmd-autofill-v1.mjs`: fixed start/end times supplied through CLI options.
-- `bmd-autofill-v2/`: event-derived start/end times from company Wi-Fi and laptop lid close events.
-
 ## Platform Support
 
-This project is macOS-only. It uses Apple Events / `osascript` to execute JavaScript in the active Google Chrome tab, and v2 also uses macOS log tools such as `pmset` and `/usr/bin/log` to detect lid-close and Wi-Fi events.
+This project is macOS-only. It uses Apple Events / `osascript` to execute JavaScript in the active Google Chrome tab.
 
 `bmd-autofill-v1.mjs` fills BMDWeb week time entries from the active Google Chrome tab.
 
@@ -103,3 +98,16 @@ Fill a specific week by passing any date in that week:
 ```sh
 ./bmd-autofill-v1.mjs --week 2026-06-08 --from 08:00 --until 17:00 --reason " " --tet 1 --save
 ```
+
+## Outlook
+
+A possible future enhancement is to extract Wi-Fi connection events from macOS
+logs using configured office and home network names (SSIDs). These events could
+suggest a start time and help distinguish office days (`TET 1`) from home-office
+days (`TET 16`). Wi-Fi departure events could be combined with laptop lid-close
+events to suggest an end time.
+
+These suggestions would still need review: macOS may redact network names, logs
+may be incomplete, and being connected to Wi-Fi does not necessarily mean working.
+Ambiguous days should remain editable rather than receive guessed times. This
+is an exploration for future development; v1 uses manually supplied times and TET.
