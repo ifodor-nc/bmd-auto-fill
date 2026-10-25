@@ -1,5 +1,14 @@
 # BMD Auto Fill Usage
 
+## Versions
+
+- `bmd-autofill-v1.mjs`: fixed start/end times supplied through CLI options.
+- `bmd-autofill-v2/`: event-derived start/end times from company Wi-Fi and laptop lid close events.
+
+## Platform Support
+
+This project is macOS-only. It uses Apple Events / `osascript` to execute JavaScript in the active Google Chrome tab, and v2 also uses macOS log tools such as `pmset` and `/usr/bin/log` to detect lid-close and Wi-Fi events.
+
 `bmd-autofill-v1.mjs` fills BMDWeb week time entries from the active Google Chrome tab.
 
 ## Requirements
@@ -8,6 +17,16 @@
 - Google Chrome with `View > Developer > Allow JavaScript from Apple Events` enabled.
 - BMDWeb already open and logged in in the active Chrome tab.
 
+For v1, start on the timesheet, the BMD main screen with the visible `TIME` tile,
+or the TIME module screen with the visible `Edit` tile. The script navigates through
+`TIME` > `Edit` automatically and waits for the timesheet before filling entries.
+On other pages, open the timesheet manually if those tiles are unavailable.
+
+V1 uses fixed times and the manually supplied `--tet`; it does not check Wi-Fi SSIDs
+or macOS activity logs. TET entry is confirmed with Enter, followed by a pause,
+then Tab and another pause before filling the times. It does not click dropdown
+options. Increase `--delay` (for example, `--delay 1800`) if BMD responds slowly.
+
 ## Dry Run
 
 Run without `--save` first. This prints the entries that would be created.
@@ -15,6 +34,28 @@ Run without `--save` first. This prints the entries that would be created.
 ```sh
 ./bmd-autofill-v1.mjs --from 08:00 --until 17:00 --reason " " --tet 1
 ```
+
+## Edit Individual Days In The Terminal
+
+Add `--interactive` to open the entire plan in the nano terminal editor, one line
+per day. Edit times, TET and quoted reasons together. Keep dates unchanged; delete
+a line to skip that day. Times must use `HH:MM`, and Until must be later than From.
+Save with Ctrl+O, Enter, then close with Ctrl+X. Delete all entry lines to cancel.
+Invalid entries reopen the editor with an error comment for correction.
+
+```text
+19.10.2026 08:00 17:00 16 " "
+20.10.2026 08:30 16:45 1 "Office"
+```
+
+```sh
+./bmd-autofill-v1.mjs --week 2026-10-19 --from 08:00 --until 17:00 --tet 16 --interactive
+```
+
+The revised plan is printed to the console. Without `--save`, nothing is sent to
+BMD and edits are not stored after the command exits. To edit and save in one
+run, use `--interactive --save`; the edited per-day times are sent to BMD after
+the editor closes. Interactive mode requires a terminal and `/usr/bin/nano`.
 
 ## Save Entries
 
@@ -34,6 +75,7 @@ Add `--save` when the dry-run plan looks correct.
 - `--week YYYY-MM-DD`: Any date in the target week. Default: today.
 - `--delay MS`: Wait between BMDWeb actions. Default: `1200`.
 - `--save`: Actually click Save for each day.
+- `--interactive`: Edit the whole plan in nano before printing or saving.
 - `--help`: Show command help.
 
 ## Examples

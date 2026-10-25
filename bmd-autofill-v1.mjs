@@ -1,6 +1,9 @@
 #!/usr/bin/env node
 
 import { execFileSync } from "node:child_process";
+import { mkdtempSync, readFileSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 const DEFAULT_DAYS = "mon,tue,wed,thu,fri";
 const DAY_INDEX = new Map([
@@ -33,6 +36,7 @@ Options:
                      Example: mon,tue,wed,thu,fri
   --week YYYY-MM-DD  Any date in the target week. Default: today
   --delay MS         Wait between BMDWeb actions. Default: 1200
+  --interactive      Edit the whole plan at once in the nano terminal editor.
   --save             Actually click Save for each day.
   --help             Show this help.
 
@@ -40,6 +44,8 @@ Safety:
   Without --save this only prints the entries it would create.
   Chrome must have View > Developer > Allow JavaScript from Apple Events enabled.
   BMDWeb must already be open and logged in in the active Chrome tab.
+  Start on the timesheet, the main screen with TIME, or the TIME module with Edit.
+  The script navigates through TIME > Edit when needed.
 `;
 
 const config = parseArgs(process.argv.slice(2));
@@ -54,9 +60,17 @@ if (dates.length === 0) {
     throw new Error("No matching days selected. Check --days.");
 }
 
+const entries = dates.map((date) => ({
+    date: formatDmy(date), from: config.from, until: config.until,
+    tet: config.tet, reason: config.reason,
+}));
+if (config.interactive) {
+    if (await editEntries(entries) === false) process.exit(0);
+}
+
 console.log("BMDWeb week time-entry plan:");
-for (const date of dates) {
-    console.log(`- ${formatDmy(date)} ${config.from}-${config.until} tet=${config.tet} reason=${JSON.stringify(config.reason)}`);
+for (const entry of entries) {
+    console.log(`- ${entry.date} ${entry.from}-${entry.until} tet=${entry.tet} reason=${JSON.stringify(entry.reason)}`);
 }
 
 if (!config.save) {
@@ -65,12 +79,8 @@ if (!config.save) {
 }
 
 const browserConfig = {
-    from: config.from,
-    until: config.until,
-    reason: config.reason,
-    tet: config.tet,
     delay: config.delay,
-    dates: dates.map(formatDmy),
+    entries,
 };
 
 const injectedScript = buildBrowserScript(browserConfig);
@@ -97,6 +107,7 @@ function parseArgs(args) {
         week: new Date(),
         delay: 1200,
         save: false,
+        interactive: false,
         help: false,
     };
 
@@ -130,6 +141,9 @@ function parseArgs(args) {
             case "--save":
                 parsed.save = true;
                 break;
+            case "--interactive":
+                parsed.interactive = true;
+                break;
             case "--help":
             case "-h":
                 parsed.help = true;
@@ -159,8 +173,59 @@ function requireValue(args, index, flag) {
 }
 
 function assertTime(value, flag) {
-    if (!/^\d{2}:\d{2}$/.test(value)) {
+    if (!/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(value)) {
         throw new Error(`${flag} must use HH:MM, for example 08:00`);
+    }
+}
+
+async function editEntries(entries) {
+    if (!process.stdin.isTTY || !process.stdout.isTTY) {
+        throw new Error("--interactive requires a terminal. Run this command directly in Terminal.");
+    }
+    const directory = mkdtempSync(join(tmpdir(), "bmd-plan-"));
+    const file = join(directory, "plan.txt");
+    const header = "# Date        From  Until TET Reason (quoted JSON string)\n"
+        + "# Edit times, TET and reason. Keep dates unchanged; remove a line to skip it.\n"
+        + "# Save: Ctrl+O, Enter. Close: Ctrl+X. Empty plan cancels.\n";
+    writeFileSync(file, header + entries.map((entry) =>
+        `${entry.date} ${entry.from} ${entry.until} ${entry.tet} ${JSON.stringify(entry.reason)}`
+    ).join("\n") + "\n", { mode: 0o600 });
+    try {
+        while (true) {
+            execFileSync("/usr/bin/nano", [file], { stdio: "inherit" });
+            try {
+                const seen = new Set();
+                const edited = readFileSync(file, "utf8").split(/\r?\n/)
+                    .filter((line) => line.trim() && !line.trimStart().startsWith("#"))
+                    .map((line) => {
+                        const match = line.trim().match(/^(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(.+)$/);
+                        if (!match) throw new Error("Use: date from until TET \"reason\"");
+                        const [, date, from, until, tet, reasonText] = match;
+                        if (!entries.some((entry) => entry.date === date) || seen.has(date)) {
+                            throw new Error("Unknown or duplicate date: " + date);
+                        }
+                        seen.add(date);
+                        assertTime(from, "From");
+                        assertTime(until, "Until");
+                        if (until <= from) throw new Error(date + ": Until must be later than From.");
+                        requireTet(tet);
+                        const reason = JSON.parse(reasonText);
+                        if (typeof reason !== "string") throw new Error("Reason must be a quoted string.");
+                        return { date, from, until, tet, reason };
+                    });
+                if (!edited.length) {
+                    console.log("Empty plan. Cancelled without changing BMD.");
+                    return false;
+                }
+                entries.splice(0, entries.length, ...edited);
+                break;
+            } catch (error) {
+                const contents = readFileSync(file, "utf8");
+                writeFileSync(file, "# ERROR: " + error.message.replace(/[\r\n]/g, " ") + "\n" + contents);
+            }
+        }
+    } finally {
+        rmSync(directory, { recursive: true, force: true });
     }
 }
 
@@ -221,6 +286,23 @@ function buildBrowserScript(browserConfig) {
         return window.Ext.getCmp(input.id.replace("-inputEl", ""));
     }
 
+    function key(input, name, code, keyCode) {
+        input.dispatchEvent(new KeyboardEvent("keydown", {
+            key: name,
+            code,
+            keyCode,
+            which: keyCode,
+            bubbles: true,
+        }));
+        input.dispatchEvent(new KeyboardEvent("keyup", {
+            key: name,
+            code,
+            keyCode,
+            which: keyCode,
+            bubbles: true,
+        }));
+    }
+
     function setInputValue(input, value) {
         input.focus();
         input.value = value;
@@ -236,6 +318,33 @@ function buildBrowserScript(browserConfig) {
         }
 
         input.blur();
+    }
+
+    async function setTetValue(input, value) {
+        const component = extComponentForInput(input);
+        input.focus();
+        input.select?.();
+        input.value = value;
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+        input.dispatchEvent(new Event("change", { bubbles: true }));
+
+        if (component) {
+            if (component.setRawValue) {
+                component.setRawValue(value);
+            }
+            if (component.setValue) {
+                component.setValue(value);
+            }
+            if (component.fireEvent) {
+                component.fireEvent("change", component, value);
+            }
+        }
+
+        input.dispatchEvent(new Event("change", { bubbles: true }));
+        key(input, "Enter", "Enter", 13);
+        await sleep(Math.max(750, Math.floor(cfg.delay / 2)));
+        key(input, "Tab", "Tab", 9);
+        await sleep(Math.max(1000, cfg.delay));
     }
 
     function inputByName(name) {
@@ -307,6 +416,119 @@ function buildBrowserScript(browserConfig) {
             || inputByNearbyText(patterns);
     }
 
+    function exactTextElement(label) {
+        return [...document.querySelectorAll("a,button,span,div")]
+            .find((candidate) => visible(candidate) && textOf(candidate) === label);
+    }
+
+    function hasVisibleButton(label) {
+        return Boolean(exactTextElement(label));
+    }
+
+    function hasVisibleInputName(name) {
+        return [...document.querySelectorAll("input")]
+            .some((candidate) => visible(candidate) && candidate.name === name);
+    }
+
+    function hasVisibleDatePicker() {
+        return [...document.querySelectorAll("input")]
+            .some((candidate) =>
+                visible(candidate)
+                && /^\\d{2}\\.\\d{2}\\.\\d{4}$/.test(candidate.value)
+                && candidate.name !== "MCA_ZBU_BUCHUNG_DATUM"
+            );
+    }
+
+    function isTimesheetPage() {
+        return hasVisibleButton("New")
+            && hasVisibleDatePicker()
+            && (
+                hasVisibleInputName("MCA_ZBU_BUCHUNG_BEGINNZEIT")
+                || /Time entries/i.test(document.body.innerText || "")
+            );
+    }
+
+    function tileButton(label) {
+        const directTile = [...document.querySelectorAll("a.bmd-tile[role='button'],a[role='button'],button")]
+            .find((candidate) => visible(candidate) && textOf(candidate) === label);
+        if (directTile) {
+            return directTile;
+        }
+
+        const exact = exactTextElement(label);
+        if (!exact) {
+            return null;
+        }
+
+        return exact.closest("a.bmd-tile[role='button'],a[role='button'],button")
+            || exact.closest("a,button")
+            || null;
+    }
+
+    function timeTile() {
+        return tileButton("TIME");
+    }
+
+    function editTile() {
+        return tileButton("Edit");
+    }
+
+    async function waitForNavigationStep(predicate, errorMessage) {
+        const deadline = Date.now() + 15000;
+        while (Date.now() < deadline) {
+            if (predicate()) {
+                return;
+            }
+            await sleep(500);
+        }
+
+        throw new Error(errorMessage);
+    }
+
+    async function openEditTile() {
+        const tile = editTile();
+        if (!tile) {
+            throw new Error("Could not find the BMD TIME module Edit tile. Open the timesheet manually and retry.");
+        }
+
+        tile.click();
+        await waitForNavigationStep(
+            isTimesheetPage,
+            "Clicked Edit, but the BMD timesheet page did not appear within 15 seconds.",
+        );
+        await sleep(cfg.delay);
+    }
+
+    async function ensureTimesheetPage() {
+        if (isTimesheetPage()) {
+            return "already-on-timesheet";
+        }
+
+        if (editTile()) {
+            await openEditTile();
+            return "navigated-from-edit-tile";
+        }
+
+        const tile = timeTile();
+        if (!tile) {
+            throw new Error("Could not find the timesheet page or the BMD main-screen TIME tile. Open the timesheet manually and retry.");
+        }
+
+        tile.click();
+        await waitForNavigationStep(
+            () => isTimesheetPage() || Boolean(editTile()),
+            "Clicked TIME, but neither the BMD Edit tile nor the timesheet page appeared within 15 seconds.",
+        );
+
+        if (isTimesheetPage()) {
+            await sleep(cfg.delay);
+            return "navigated-from-time-tile";
+        }
+
+        await openEditTile();
+        return "navigated-from-time-edit-tiles";
+    }
+
     function clickByText(label) {
         const candidates = [...document.querySelectorAll("a,button,span,div")]
             .filter((candidate) => visible(candidate) && textOf(candidate) === label);
@@ -348,7 +570,8 @@ function buildBrowserScript(browserConfig) {
         await sleep(cfg.delay);
     }
 
-    async function fillAndSaveDate(dmy) {
+    async function fillAndSaveDate(entry) {
+        const dmy = entry.date;
         await selectDate(dmy);
         clickByText("New");
         await sleep(cfg.delay);
@@ -358,24 +581,25 @@ function buildBrowserScript(browserConfig) {
         if (!tet) {
             throw new Error("Could not find visible TET no. / time entry type input");
         }
-        setInputValue(tet, cfg.tet);
-        setInputValue(inputByName("MCA_ZBU_BUCHUNG_BEGINNZEIT"), cfg.from);
-        setInputValue(inputByName("MCA_ZBU_BUCHUNG_ENDEZEIT"), cfg.until);
-        setInputValue(inputByName("MCA_ZBU_BEGRUENDUNG"), cfg.reason);
+        await setTetValue(tet, entry.tet);
+        setInputValue(inputByName("MCA_ZBU_BUCHUNG_BEGINNZEIT"), entry.from);
+        setInputValue(inputByName("MCA_ZBU_BUCHUNG_ENDEZEIT"), entry.until);
+        setInputValue(inputByName("MCA_ZBU_BEGRUENDUNG"), entry.reason);
         await sleep(Math.max(500, Math.floor(cfg.delay / 2)));
 
         const duration = inputByName("MCA_ZBU_BUCHUNGSDAUER").value;
         clickByText("Save");
         await sleep(cfg.delay);
-        return { date: dmy, from: cfg.from, until: cfg.until, tet: cfg.tet, duration };
+        return { date: dmy, from: entry.from, until: entry.until, tet: entry.tet, duration };
     }
 
+    const navigation = await ensureTimesheetPage();
     const results = [];
-    for (const dmy of cfg.dates) {
-        results.push(await fillAndSaveDate(dmy));
+    for (const entry of cfg.entries) {
+        results.push(await fillAndSaveDate(entry));
     }
 
-    return JSON.stringify({ saved: results });
+    return JSON.stringify({ navigation, saved: results });
 }());
 `;
 }
