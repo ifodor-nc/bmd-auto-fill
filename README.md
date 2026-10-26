@@ -12,6 +12,10 @@ This project is macOS-only. It uses Apple Events / `osascript` to execute JavaSc
 - Google Chrome with `View > Developer > Allow JavaScript from Apple Events` enabled.
 - BMDWeb already open and logged in in the active Chrome tab.
 
+Before running with `--save`, select the BMDWeb tab in Chrome's front window.
+The script runs in that window's active tab; it does not search other tabs for
+BMD or validate the URL/domain. It identifies the timesheet by its page controls.
+
 For v1, start on the timesheet, the BMD main screen with the visible `TIME` tile,
 or the TIME module screen with the visible `Edit` tile. The script navigates through
 `TIME` > `Edit` automatically and waits for the timesheet before filling entries.
