@@ -16,10 +16,15 @@ Before running with `--save`, select the BMDWeb tab in Chrome's front window.
 The script runs in that window's active tab; it does not search other tabs for
 BMD or validate the URL/domain. It identifies the timesheet by its page controls.
 
-For v1, start on the timesheet, the BMD main screen with the visible `TIME` tile,
-or the TIME module screen with the visible `Edit` tile. The script navigates through
-`TIME` > `Edit` automatically and waits for the timesheet before filling entries.
-On other pages, open the timesheet manually if those tiles are unavailable.
+Supported starting pages (BMD must already be logged in):
+
+- **Main screen with the TIME tile:** navigates through `TIME` > `Edit`.
+- **TIME module with the Edit tile:** opens the timesheet through `Edit`.
+- **Timesheet page:** starts directly without navigation.
+
+The script waits for the timesheet before filling entries. On other BMD pages
+without these controls, it stops with an error asking you to open the timesheet
+manually.
 
 V1 uses fixed times and the manually supplied `--tet`; it does not check Wi-Fi SSIDs
 or macOS activity logs. TET entry is confirmed with Enter, followed by a pause,
